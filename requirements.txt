@@ -1,2 +1,5 @@
 streamlit
+pinecone-client
 openai
+requests
+beautifulsoup4
