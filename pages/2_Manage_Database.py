@@ -1,5 +1,6 @@
+# pages/2_Manage_Database.py
 import streamlit as st
-from utils.pinecone_utils import get_pinecone_index, embed_text
+from utils.pinecone_utils import get_pinecone_index, embed_text, store_chunked_document, reprocess_documents, generate_document_id
 import json
 from nltk.tokenize import sent_tokenize
 
@@ -29,22 +30,11 @@ scrape_type = st.radio("Choose scrape type for test data:", ["Markdown (LLM-read
 if st.button("Add Test Data"):
     if test_url and test_content:
         try:
-            embedding = embed_text(test_content)
-            truncated_content = truncate_content(test_content)
             metadata = {
                 'url': test_url,
                 'scrape_type': scrape_type,
-                'content': truncated_content
             }
-            pinecone_index.upsert(
-                vectors=[
-                    {
-                        "id": test_url,
-                        "values": embedding,
-                        "metadata": metadata
-                    }
-                ]
-            )
+            store_chunked_document(pinecone_index, test_url, test_content, metadata)
             st.success(f"Test data added with URL: {test_url}")
         except Exception as e:
             st.error(f"Error adding test data: {str(e)}")
@@ -55,22 +45,20 @@ st.subheader("View Data")
 num_results = st.number_input("Number of results to view", min_value=1, max_value=100, value=10)
 if st.button("View Data"):
     try:
-        # Get the dimension of the index
         index_stats = pinecone_index.describe_index_stats()
         index_dimension = index_stats['dimension']
-
-        # Create a zero vector with the correct dimension
         zero_vector = [0] * index_dimension
 
         results = pinecone_index.query(vector=zero_vector, top_k=num_results, include_metadata=True)
         for match in results['matches']:
-            st.write(f"URL: {match['id']}")
+            st.write(f"URL: {match['metadata']['url']}")
             st.write(f"Score: {match['score']}")
             
             st.subheader("Content")
-            st.write(match['metadata']['content'][:500] + "..." if len(match['metadata']['content']) > 500 else match['metadata']['content'])
+            st.write(match['metadata']['chunk_text'][:500] + "..." if len(match['metadata']['chunk_text']) > 500 else match['metadata']['chunk_text'])
             
             st.write(f"Scrape Type: {match['metadata'].get('scrape_type', 'Not specified')}")
+            st.write(f"Chunk: {match['metadata']['chunk_index'] + 1}/{match['metadata']['total_chunks']}")
             
             st.write("---")
     except Exception as e:
@@ -81,7 +69,8 @@ delete_url = st.text_input("Enter the URL of the data to delete:")
 if st.button("Delete Data"):
     if delete_url:
         try:
-            pinecone_index.delete(ids=[delete_url])
+            doc_id = generate_document_id(delete_url)
+            pinecone_index.delete(ids=[f"{doc_id}#chunk{i}" for i in range(1000)])  # Assume max 1000 chunks
             st.success(f"Data with URL {delete_url} deleted successfully")
         except Exception as e:
             st.error(f"Error deleting data: {str(e)}")
@@ -93,19 +82,22 @@ if st.button("Clear All Data"):
     confirm = st.checkbox("I understand this will delete all data in the index.")
     if confirm:
         try:
-            # Get all vector IDs
-            index_stats = pinecone_index.describe_index_stats()
-            total_vector_count = index_stats['total_vector_count']
-            
-            # Delete all vectors in batches
-            batch_size = 1000
-            for i in range(0, total_vector_count, batch_size):
-                results = pinecone_index.query(vector=[0]*index_stats['dimension'], top_k=batch_size, include_metadata=False)
-                ids_to_delete = [match['id'] for match in results['matches']]
-                pinecone_index.delete(ids=ids_to_delete)
-            
+            pinecone_index.delete(delete_all=True)
             st.success("All data cleared from the index.")
         except Exception as e:
             st.error(f"Error clearing data: {str(e)}")
     else:
         st.warning("Please confirm that you want to clear all data.")
+
+st.subheader("Reprocess All Documents")
+if st.button("Reprocess All Documents"):
+    confirm = st.checkbox("I understand this will reprocess all documents in the index.")
+    if confirm:
+        try:
+            with st.spinner("Reprocessing documents... This may take a while."):
+                reprocess_documents(pinecone_index)
+            st.success("All documents have been reprocessed!")
+        except Exception as e:
+            st.error(f"Error reprocessing documents: {str(e)}")
+    else:
+        st.warning("Please confirm that you want to reprocess all documents.")

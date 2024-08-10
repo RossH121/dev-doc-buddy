@@ -2,4 +2,7 @@ streamlit
 pinecone-client
 openai
 requests
-beautifulsoup4
+nltk
+tiktoken
+google-generativeai
+anthropic
