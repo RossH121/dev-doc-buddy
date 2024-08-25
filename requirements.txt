@@ -1,5 +1,6 @@
 streamlit
 pinecone-client
+pinecone-plugin-assistant
 openai
 requests
 nltk

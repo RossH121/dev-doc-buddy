@@ -1,6 +1,5 @@
-# pages/2_Manage_Database.py
 import streamlit as st
-from utils.pinecone_utils import get_pinecone_index, embed_text, store_chunked_document, reprocess_documents, generate_document_id
+from utils.pinecone_utils import get_pinecone_index, embed_text, store_chunked_document, generate_document_id
 import json
 from nltk.tokenize import sent_tokenize
 
@@ -76,28 +75,3 @@ if st.button("Delete Data"):
             st.error(f"Error deleting data: {str(e)}")
     else:
         st.warning("Please enter a URL to delete.")
-
-st.subheader("Clear All Data")
-if st.button("Clear All Data"):
-    confirm = st.checkbox("I understand this will delete all data in the index.")
-    if confirm:
-        try:
-            pinecone_index.delete(delete_all=True)
-            st.success("All data cleared from the index.")
-        except Exception as e:
-            st.error(f"Error clearing data: {str(e)}")
-    else:
-        st.warning("Please confirm that you want to clear all data.")
-
-st.subheader("Reprocess All Documents")
-if st.button("Reprocess All Documents"):
-    confirm = st.checkbox("I understand this will reprocess all documents in the index.")
-    if confirm:
-        try:
-            with st.spinner("Reprocessing documents... This may take a while."):
-                reprocess_documents(pinecone_index)
-            st.success("All documents have been reprocessed!")
-        except Exception as e:
-            st.error(f"Error reprocessing documents: {str(e)}")
-    else:
-        st.warning("Please confirm that you want to reprocess all documents.")

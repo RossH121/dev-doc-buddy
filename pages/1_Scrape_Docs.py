@@ -1,14 +1,15 @@
 # pages/1_Scrape_Docs.py
 import streamlit as st
 import requests
-from urllib.parse import quote
-from utils.pinecone_utils import get_pinecone_index, store_chunked_document, clean_content_with_gemini
+from utils.pinecone_utils import get_pinecone_index, store_chunked_document, clean_content_with_gemini, init_pinecone_assistant, upload_file_to_assistant
 import json
 import nltk
 from nltk.tokenize import sent_tokenize
 from typing import List
 import tiktoken
 import logging
+import re
+from urllib.parse import urlparse
 
 SCRAPINGANT_API_URL = "https://api.scrapingant.com/v2"
 API_KEY = st.secrets["SCRAPINGANT_API_KEY"]
@@ -29,15 +30,13 @@ download_nltk_data()
 if 'scraped_data' not in st.session_state:
     st.session_state.scraped_data = None
 
-def scrape_with_scrapingant(url, endpoint, extra_params=None):
+def scrape_with_scrapingant(url):
     params = {
         "url": url,
         "x-api-key": API_KEY,
     }
-    if extra_params:
-        params.update(extra_params)
     
-    response = requests.get(f"{SCRAPINGANT_API_URL}/{endpoint}", params=params)
+    response = requests.get(f"{SCRAPINGANT_API_URL}/markdown", params=params)
     
     if response.status_code == 200:
         credits_used = response.headers.get('Ant-credits-cost', 'Unknown')
@@ -46,33 +45,19 @@ def scrape_with_scrapingant(url, endpoint, extra_params=None):
         
         # Clean the content using Gemini 1.5 Pro
         try:
-            if isinstance(data, dict) and 'content' in data:
-                cleaned_content = clean_content_with_gemini(json.dumps(data['content']))
-                if cleaned_content == json.dumps(data['content']):
-                    st.warning("Content cleaning did not modify the original content. It may have been blocked due to safety concerns.")
-                data['content'] = json.loads(cleaned_content)
-            elif isinstance(data, str):
-                cleaned_content = clean_content_with_gemini(data)
-                if cleaned_content == data:
-                    st.warning("Content cleaning did not modify the original content. It may have been blocked due to safety concerns.")
-                data = cleaned_content
+            cleaned_content = clean_content_with_gemini(data['markdown'])
+            if cleaned_content == data['markdown']:
+                st.warning("Content cleaning did not modify the original content. It may have been blocked due to safety concerns.")
+            data['markdown'] = cleaned_content
         except Exception as e:
             st.error(f"Error during content cleaning: {str(e)}")
             logging.error(f"Error during content cleaning: {str(e)}")
         
-        # Extract navigation links (if any remain after cleaning)
-        navigation_links = []
-        if isinstance(data, dict) and 'content' in data:
-            for item in data['content']:
-                if isinstance(item, dict) and item.get('type') == 'links':
-                    navigation_links.extend(item.get('links', []))
-                    data['content'].remove(item)
-        
-        return data, navigation_links
+        return data, []  # Returning an empty list for navigation links as they're not available in markdown response
     else:
         st.error(f"Error: {response.status_code} - {response.text}")
         return None, None
-    
+
 def chunk_text(text: str, max_tokens: int = 8000) -> List[str]:
     encoding = tiktoken.encoding_for_model("text-embedding-3-large")
     tokens = encoding.encode(text)
@@ -103,64 +88,20 @@ def truncate_content(content, max_size=39000):
             break
     return truncated_content.strip() + "..." if len(truncated_content) < len(content) else truncated_content
 
-def convert_to_markdown(scraped_data):
-    markdown_content = ""
-    if 'markdown' in scraped_data:
-        return scraped_data['markdown']
-    
-    for item in scraped_data.get('content', []):
-        if isinstance(item, dict):
-            if item.get('type') == 'heading':
-                markdown_content += f"{'#' * item['level']} {item['text']}\n\n"
-            elif item.get('type') == 'paragraph':
-                markdown_content += f"{item['text']}\n\n"
-            elif item.get('type') == 'list':
-                for li in item.get('items', []):
-                    markdown_content += f"- {li}\n"
-                markdown_content += "\n"
-            elif item.get('type') == 'code':
-                markdown_content += f"```{item.get('language', '')}\n{item['code']}\n```\n\n"
-        elif isinstance(item, str):
-            markdown_content += f"{item}\n\n"
-    
-    for snippet in scraped_data.get('code_snippets', []):
-        if isinstance(snippet, dict):
-            markdown_content += f"```{snippet.get('language', '')}\n{snippet['code']}\n```\n\n"
-        elif isinstance(snippet, str):
-            markdown_content += f"```\n{snippet}\n```\n\n"
-    
-    return markdown_content.strip()
-
 st.title("Scrape and Manage Development Docs")
 
 url = st.text_input("Enter the URL of the development docs:")
-scrape_type = st.radio("Choose scraping type:", 
-                       ["Markdown (LLM-ready)", "AI Extraction"])
-
-if scrape_type == "AI Extraction":
-    ai_properties = st.text_input("Enter properties for AI extraction (comma-separated):", 
-                                  "title, content, code_snippets")
 
 if st.button("Scrape"):
     if url:
         with st.spinner("Scraping and cleaning documentation... This may take a moment."):
             try:
-                if scrape_type == "Markdown (LLM-ready)":
-                    result, navigation_links = scrape_with_scrapingant(url, "markdown")
-                else:  # AI Extraction
-                    result, navigation_links = scrape_with_scrapingant(url, "extract", 
-                                                     {"extract_properties": quote(ai_properties)})
+                result, _ = scrape_with_scrapingant(url)
                 
                 if result:
                     st.session_state.scraped_data = result
                     st.session_state.scraped_data['url'] = url
-                    markdown_content = convert_to_markdown(result)
-                    cleaned_markdown = clean_content_with_gemini(markdown_content)
-                    if cleaned_markdown == markdown_content:
-                        st.warning("Content cleaning did not modify the markdown content. It may have been blocked due to safety concerns.")
-                    st.session_state.scraped_data['markdown'] = cleaned_markdown
-                    st.session_state.navigation_links = navigation_links
-                    st.success(f"{scrape_type} scraping and cleaning completed!")
+                    st.success("Scraping and cleaning completed!")
                 else:
                     st.error("Failed to scrape the content. Please check the URL and try again.")
             except Exception as e:
@@ -168,6 +109,12 @@ if st.button("Scrape"):
                 logging.error(f"Scraping error: {str(e)}")
     else:
         st.warning("Please enter a URL before scraping.")
+
+def get_clean_filename(url):
+    parsed_url = urlparse(url)
+    clean_url = re.sub(r'[^\w\-_\.]', '_', parsed_url.netloc + parsed_url.path)
+    clean_url = re.sub(r'_+', '_', clean_url)
+    return f"{clean_url.strip('_')}.txt"
 
 # Display and Edit Results
 if st.session_state.scraped_data is not None:
@@ -183,38 +130,54 @@ if st.session_state.scraped_data is not None:
             st.session_state.scraped_data['markdown'] = edited_content
             st.success("Edits saved!")
 
+    # Choose storage option
+    storage_option = st.radio("Choose storage option:", ["Pinecone Index", "Pinecone Assistant File"])
+
     # Save to Pinecone
     if st.button("Save to Pinecone"):
         try:
-            pinecone_index = get_pinecone_index()
-            
-            metadata = {
-                'url': st.session_state.scraped_data.get('url', ''),
-                'scrape_type': scrape_type,
-            }
-            
-            with st.spinner("Saving to Pinecone... This may take a moment for large documents."):
-                store_chunked_document(
-                    pinecone_index,
-                    st.session_state.scraped_data.get('url', ''),
-                    st.session_state.scraped_data['markdown'],
-                    metadata
-                )
-            
-            st.success("Data saved to Pinecone!")
-        except ValueError as ve:
-            st.error(f"Error saving to Pinecone: {str(ve)}")
-            st.info("The document might be too large or complex. Try splitting it into smaller sections before saving.")
-        except Exception as e:
-            st.error(f"Error saving to Pinecone: {str(e)}")
-            logging.error(f"Pinecone save error: {str(e)}")
-            st.info("An unexpected error occurred. Please check the logs for more details.")
+            if storage_option == "Pinecone Index":
+                pinecone_index = get_pinecone_index()
+                
+                metadata = {
+                    'url': st.session_state.scraped_data.get('url', ''),
+                    'scrape_type': 'Markdown (LLM-ready)',
+                }
+                
+                with st.spinner("Saving to Pinecone Index... This may take a moment for large documents."):
+                    store_chunked_document(
+                        pinecone_index,
+                        st.session_state.scraped_data.get('url', ''),
+                        st.session_state.scraped_data['markdown'],
+                        metadata
+                    )
+                
+                st.success("Data saved to Pinecone Index!")
+            else:  # Pinecone Assistant File
+                assistant = init_pinecone_assistant("dev-doc-buddy")
+                
+                content = st.session_state.scraped_data['markdown']
+                url = st.session_state.scraped_data.get('url', '')
+                
+                filename = get_clean_filename(url)
+                
+                # Prepare the content as a formatted string
+                file_content = f"URL: {url}\n\nContent:\n\n{content}"
+                
+                with st.spinner(f"Uploading file '{filename}' to Pinecone Assistant... This may take a moment for large documents."):
+                    response = upload_file_to_assistant(assistant, file_content, filename)
+                
+                if response and isinstance(response, dict) and 'id' in response:
+                    st.success(f"File uploaded to Pinecone Assistant! Filename: {filename}, File ID: {response['id']}")
+                else:
+                    st.warning("File upload response format was unexpected. Please check the Pinecone console.")
+                    st.json(response)  # Display the raw response for debugging
 
-if st.session_state.get('navigation_links'):
-    st.subheader("Navigation Links")
-    col1, col2 = st.columns(2)
-    for i, link in enumerate(st.session_state.navigation_links):
-        if isinstance(link, dict):
-            (col1 if i % 2 == 0 else col2).markdown(f"- [{link.get('text', '')}]({link.get('url', '')})")
-        elif isinstance(link, str):
-            (col1 if i % 2 == 0 else col2).markdown(f"- {link}")
+        except Exception as e:
+            error_message = f"Error saving to Pinecone: {str(e)}"
+            st.error(error_message)
+            logging.error(error_message)
+            if "too large" in str(e).lower():
+                st.info("The document might be too large or complex. Try splitting it into smaller sections before saving.")
+            else:
+                st.info("An unexpected error occurred. Please check the logs for more details.")

@@ -1,4 +1,3 @@
-# utils/pinecone_utils.py
 import streamlit as st
 from pinecone import Pinecone, ServerlessSpec
 from openai import OpenAI
@@ -9,6 +8,8 @@ import google.generativeai as genai
 import logging
 import json
 from typing import List, Dict, Any
+import tempfile
+import os
 
 # Constants
 INDEX_NAME = "dev-docs"
@@ -28,6 +29,12 @@ def init_pinecone(index_name: str = INDEX_NAME) -> Pinecone.Index:
             spec=ServerlessSpec(cloud='aws', region='us-east-1')
         )
     return pc.Index(index_name)
+
+@st.cache_resource
+def init_pinecone_assistant(assistant_name: str):
+    """Initialize Pinecone Assistant."""
+    pc = Pinecone(api_key=st.secrets["PINECONE_API_KEY"])
+    return pc.assistant.Assistant(assistant_name)
 
 @st.cache_resource
 def init_gemini() -> genai.GenerativeModel:
@@ -167,29 +174,6 @@ def store_chunked_document(index: Pinecone.Index, url: str, text: str, metadata:
             logging.error(f"Error upserting vector {vector_id}: {str(e)}")
             raise
 
-def reprocess_documents(index: Pinecone.Index) -> None:
-    """Reprocess all documents in the index, updating their stored chunks."""
-    all_ids = index.list()
-    unique_docs = {id.split('#')[0] for id in all_ids}
-
-    for doc_id in unique_docs:
-        chunks = index.fetch([f"{doc_id}#chunk{i}" for i in range(1000)])  # Assuming max 1000 chunks
-        if chunks['vectors']:
-            full_text = ""
-            metadata = {}
-            for chunk_id, chunk_data in chunks['vectors'].items():
-                full_text += chunk_data['metadata'].get('chunk_text', '') + " "
-                if not metadata:
-                    metadata = chunk_data['metadata'].copy()
-
-            # Delete old chunks
-            index.delete(ids=[f"{doc_id}#chunk{i}" for i in range(1000)])
-
-            # Store the document again with the new chunking method
-            store_chunked_document(index, metadata.get('url', ''), full_text, metadata)
-
-    print("All documents have been reprocessed and stored with the new chunking method.")
-
 def get_document_chunks(index: Pinecone.Index, url: str) -> Dict[str, Any]:
     """Fetch and return all chunks related to a given document URL."""
     document_id = generate_document_id(url)
@@ -199,3 +183,21 @@ def get_document_chunks(index: Pinecone.Index, url: str) -> Dict[str, Any]:
 def get_pinecone_index() -> Pinecone.Index:
     """Get the Pinecone index (for backward compatibility)."""
     return init_pinecone()
+
+def upload_file_to_assistant(assistant, content: str, filename: str):
+    """Upload a file to Pinecone Assistant."""
+    try:
+        # Create a temporary file with the specified filename
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=f'_{filename}') as temp_file:
+            temp_file.write(content)
+            temp_file_path = temp_file.name
+
+        # Upload the file
+        response = assistant.upload_file(file_path=temp_file_path)
+
+        # Delete the temporary file
+        os.unlink(temp_file_path)
+
+        return response
+    except Exception as e:
+        raise Exception(f"Error uploading file to Pinecone assistant: {str(e)}")
